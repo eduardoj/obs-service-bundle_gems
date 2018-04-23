@@ -12,12 +12,16 @@
 # See http://www.gnu.org/licenses/gpl-2.0.html for full license text.
 #
 require 'bundler'
+require 'bundler/cli'
+require 'bundler/cli/package'
 require 'rubygems/package'
 require 'zlib'
 require 'tempfile'
 require 'logger'
 require 'fileutils'
 require 'optparse'
+require 'shell'
+require 'fileutils'
 
 logger = Logger.new(STDOUT)
 logger.level = Logger::INFO
@@ -33,12 +37,20 @@ OptionParser.new do |opts|
   opts.on('-oDIR', '--outdir=DIR', 'Output Directory') do |v|
     options[:outdir] = v
   end
+  opts.on('-bBOOLEAN', '--bundler=BOOLEAN', FalseClass, 'Bundler') do |v|
+    options[:bundler] = v
+  end
 end.parse!
 
 outdir = options[:outdir] || Dir.pwd
 bundled_gems = []
 
+logger.info "options: #{options.inspect}"
+return unless options[:bundler]
+
+# TODO: spec first. Maybe another parameter to tell what .spec file to use
 spec = Dir['*.spec'].first
+logger.debug "spec: #{spec.inspect}"
 unless spec
   logger.fatal 'No spec found'
   exit(1)
@@ -58,9 +70,59 @@ unless File.exist?(gem_file_lock)
 end
 logger.info "Using #{gem_file_lock}"
 
+if options[:bundler]
+# check if obscpio exists -> if yes, extract it and remove it
+  #logger.info `cpio -i < vendor.obscpio && rm vendor.obscpio` if File.file? 'vendor.obscpio'
+  if File.file? 'vendor.obscpio'
+    logger.info 'vendor.obscpio found...'
+
+    logger.info 'Extracting vendor.obscpio...'
+    logger.info `cpio -i --make-directories < vendor.obscpio`
+
+    logger.info 'Deleting vendor.obscpio...'
+    File.delete 'vendor.obscpio'
+  end
+
+  Bundler.settings.set_command_option_if_given :no_install, true
+
+  # set logger here to stdout to check whas has been downloaded
+  #Bundler.settings.set_command_option_if_given :quiet, false
+  #Bundler.settings.set_command_option_if_given :error_on_stderr, true
+  #Bundler.settings.set_command_option_if_given :verbose, true
+
+  # It works with a subdirectory for a cache
+
+  # parameter retry -> 3
+
+  Bundler::CLI::Package.new(path: "#{options[:outdir]}/vendor/bundle").run
+
+  original_directory = Dir.pwd
+#  gem_directory = "#{options[:outdir]}/vendor/bundle/vendor/cache/"
+  Dir.chdir("#{options[:outdir]}")
+  # create cpio archive
+#  logger.info `find . -depth -type f -name '*.gem' -print`
+  logger.info `find vendor/bundle/vendor/cache/ -depth -type f -print | cpio -o > vendor.obscpio`
+  FileUtils.rm_rf("#{options[:outdir]}/vendor")
+#  logger.info `find #{options[:outdir]} -type f`
+
+  # move it into the package directory
+#  logger.info `mv gem_files.cpio #{original_directory}`
+
+  Dir.chdir(original_directory)
+  # Remove vendor subdirectory (in case it was created)
+  FileUtils.rm_rf("#{original_directory}/vendor")
+
+  exit 0
+end
+
 logger.info 'Resolving...'
 definition = Bundler::Definition.build('Gemfile', 'Gemfile.lock', nil)
+#logger.info "  definition: #{definition.inspect}"
+logger.info "  definition: "
+pp definition
 bundled_gems.concat definition.resolve.to_a.sort_by(&:to_s)
+logger.info "  bundled_gems: "
+pp bundled_gems
 logger.info "  #{bundled_gems.size} gems..."
 
 logger.info "Updating #{spec}"
